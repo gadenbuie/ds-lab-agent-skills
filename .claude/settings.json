@@ -1,0 +1,10 @@
+{
+  "claudeMdExcludes": [
+    "/Users/garrick/.claude/CLAUDE.md"
+  ],
+  "permissions": {
+    "allow": [
+      "Bash(npm run check-types *)"
+    ]
+  }
+}
