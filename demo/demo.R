@@ -8,6 +8,12 @@ chat <- chat_claude(model = "claude-sonnet-4-6")
 live_console(chat)
 
 
+chat <- chat_claude(
+  model = "claude-sonnet-4-6",
+  system = "Respond terse like smart caveman. All technical substance stay. No fluff."
+)
+
+
 # ---- Manual skills ----
 chat2 <- chat_claude(model = "claude-sonnet-4-6")
 chat2$register_tool(btw::btw_tool_files_read)
