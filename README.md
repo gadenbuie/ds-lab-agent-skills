@@ -20,9 +20,16 @@
 
 ## Activity
 
-```
-cd demo && npx skills add JuliusBrussee/caveman
-```
+> [!TIP]
+> In the Lab, we created an `alt-text-dataviz` skill. But Emil Hvitfeldt made an
+> even better, general purpose alt text skill for Quarto, R Markdown and
+> pkgdown: <https://github.com/posit-dev/skills/blob/main/alt-text/SKILL.md>
+>
+> You can install it with this command:
+>
+> ```
+> npx skills add posit-dev/skills --skill alt-text
+> ```
 
 ### How to Write Alt Text
 
