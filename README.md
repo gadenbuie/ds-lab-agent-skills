@@ -17,3 +17,17 @@
 ### Data set
 
 [TidyTuesday 2026-04-28: US Agricultural Tariffs](https://github.com/rfordatascience/tidytuesday/blob/main/data/2026/2026-04-28/readme.md) — sourced from the [USITC Tariff Database](https://dataweb.usitc.gov/tariff/annual), covering tariff rates for agricultural and food products (HTS Chapters 1–24) imported into the US, 1997–2025.
+
+## Activity
+
+### How to Write Alt Text
+
+* [Writing Alt Text for Data Visualization | by Amy Cesal | Nightingale | Medium](https://medium.com/nightingale/writing-alt-text-for-data-visualization-2a218ef43f81)
+* [Authoring Meaningful Alternative Text | Section508.gov](https://www.section508.gov/create/alternative-text/)
+* [How to write good alternative descriptions for your data visualization | Datawrapper Academy](https://www.datawrapper.de/academy/how-to-write-good-alternative-descriptions-for-your-data-visualization)
+
+### Quarto
+
+* [Figures – Quarto](https://quarto.org/docs/authoring/figures.html#alt-text)
+* [Using R – Quarto](https://quarto.org/docs/computations/r.html#chunk-options)
+
