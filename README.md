@@ -20,6 +20,10 @@
 
 ## Activity
 
+```
+cd demo && npx skills add JuliusBrussee/caveman
+```
+
 ### How to Write Alt Text
 
 * [Writing Alt Text for Data Visualization | by Amy Cesal | Nightingale | Medium](https://medium.com/nightingale/writing-alt-text-for-data-visualization-2a218ef43f81)
