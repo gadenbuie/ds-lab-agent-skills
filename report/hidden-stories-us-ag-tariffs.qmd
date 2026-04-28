@@ -1,0 +1,474 @@
+---
+title: "Hidden Stories in the US Agricultural Tariff Code"
+author: "Posit Assistant"
+date: today
+format:
+  html:
+    toc: true
+    code-fold: true
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+---
+
+::: {.callout-note}
+This report was generated using AI under general human direction. At the time of generation, the contents have not been comprehensively reviewed by a human analyst.
+
+<!--
+To indicate human review: Delete the line above about contents not being reviewed, and replace this comment with:
+The contents have been reviewed and validated by [Your Name], [Your Role] on [Date].
+-->
+:::
+
+# Introduction
+
+The US International Trade Commission (USITC) maintains a detailed database of every tariff rate applied to goods imported into the United States. For agricultural products alone — live animals, meat, dairy, sugar, tobacco, and everything in between — this database contains over 460,000 records spanning nearly three decades (1997–2025), covering 35 different trade agreements and thousands of individual product lines.
+
+This report digs into that data in search of surprising, non-obvious, and occasionally absurd patterns. Along the way we'll discover that the US government has an official ranking of cheeses, that some tariff rates are so extreme they function as import bans, and that a wave of free trade deals in the 2000s reshaped market access — then abruptly stopped.
+
+```{r}
+#| label: load-packages
+library(tidyverse)
+```
+
+```{r}
+#| label: load-data
+tariffs <- read_csv("../data/tariff_agricultural.csv", show_col_types = FALSE)
+codes <- read_csv("../data/tariff_codes.csv", show_col_types = FALSE)
+agreements <- read_csv("../data/agreements.csv", show_col_types = FALSE)
+```
+
+```{r}
+#| label: prep-data
+# Deduplicate codes to most recent description per HTS8
+codes_dedup <- codes |>
+  arrange(hts8, desc(earliest_effective_date)) |>
+  distinct(hts8, .keep_all = TRUE)
+
+# Enrich tariff data with descriptions and structural columns
+tariffs_enriched <- tariffs |>
+  left_join(codes_dedup |> select(hts8, description), by = "hts8") |>
+  mutate(
+    chapter = str_sub(hts8, 1, 2),
+    heading = str_sub(hts8, 1, 4),
+    year = year(begin_effective_date)
+  )
+```
+
+# Understanding the data
+
+Before diving into the visualizations, it's worth understanding the structure and key concepts in this dataset. If you want to reproduce these insights or explore further, this section covers everything you need to know.
+
+## Dataset structure
+
+The data comes from the [USITC Tariff Database](https://dataweb.usitc.gov/tariff/annual) and is organized across four files:
+
+| File | Purpose | Rows |
+|------|---------|------|
+| `tariff_agricultural.csv` | Main tariff rates | ~462K |
+| `tariff_codes.csv` | Product descriptions and HTS codes | ~27K |
+| `agreements.csv` | Trade agreement names and notes | 34 |
+| `quantity_codes.csv` | Units of measurement | 83 |
+
+The main dataset (`tariff_agricultural.csv`) has one row per **HTS code × agreement × time period** combination. Each row records the tariff rate that applies to a specific product, under a specific trade agreement, during a specific date range.
+
+## Key concepts
+
+**HTS codes** (Harmonized Tariff Schedule) are 8-digit codes that identify products at a very granular level. The first two digits indicate the chapter (broad category), and the first four digits indicate the heading (subcategory). For example, `0406` is the heading for cheese, and `04061018` is specifically "Fresh blue-mold cheese, not subject to quota."
+
+**MFN (Most Favored Nation)** is the default tariff rate the US charges all WTO member countries. Despite the name sounding preferential, it's actually the baseline — the rate you pay when you *don't* have a special trade deal.
+
+**Column 2** rates apply to countries that are not WTO members or are designated non-market economies (e.g., Cuba, North Korea). These are the harshest rates in the system.
+
+**Ad valorem rates** are percentage-based tariffs (e.g., 17% of the product's value). **Specific rates** are per-unit charges (e.g., \$2.27 per kilogram). Some products face both simultaneously.
+
+::: {.callout-tip}
+## Quota systems create tariff "cliffs"
+
+Many agricultural products operate under **tariff-rate quotas (TRQs)**. A set quantity can enter at a low "within-quota" rate (often just a percentage), but any imports above that quota face a much higher "over-quota" rate (often a steep per-unit charge). You can identify these in the product descriptions: look for "subject to gen. note 15" (within quota) versus "not subject to" (over quota).
+:::
+
+## Working with the data: the snapshot approach
+
+A critical methodological note: the `begin_effective_date` column indicates when a rate *starts*, not the only year it's active. A rate begun in 2005 might remain in effect through 2024. If you group by `year(begin_effective_date)`, you'll get an inconsistent mix of products in each year — some years will have many products (when rates were updated), others few.
+
+The correct approach for time series analysis is to take **annual snapshots**: for each year, find all rates that were active on a reference date (e.g., July 1).
+
+```{r}
+#| label: snapshot-function
+make_snapshot <- function(ref_date) {
+  tariffs_enriched |>
+    filter(
+      begin_effective_date <= ref_date,
+      end_effective_date >= ref_date
+    ) |>
+    mutate(snapshot_year = year(ref_date))
+}
+```
+
+::: {.callout-warning}
+## Watch for compositional artifacts
+
+When computing averages over time, be aware that the *set of active HTS codes* changes as products are added, removed, or reclassified. A sudden jump in a chapter's average tariff rate may reflect a change in which products are included, not a policy change. We encountered this issue during our analysis — apparent spikes in "Prepared vegetables & fruit" tariffs turned out to be peanut products (with 130%+ rates) entering and exiting the average.
+:::
+
+## Joining the tables
+
+The four tables connect via simple keys:
+
+- `tariff_agricultural` → `tariff_codes` on `hts8` (product descriptions)
+- `tariff_agricultural` → `agreements` on `agreement` (agreement names)
+- `tariff_codes` → `quantity_codes` on `quantity_1_code` / `quantity_2_code`
+
+When joining `tariff_codes`, note that some HTS codes have multiple entries (different descriptions over time). Deduplicate to the most recent entry per code to avoid many-to-many joins.
+
+# The free trade spree
+
+Between 1997 and 2013, the United States went on a trade deal signing spree, tripling the number of active preferential agreements covering agricultural products. Then, abruptly, the deal-making stopped.
+
+```{r}
+#| label: agreement-staircase
+# Count active agreements per year using snapshots
+agreement_ts <- map(1997:2024, \(y) {
+  ref_date <- as.Date(paste0(y, "-07-01"))
+  tariffs |>
+    filter(
+      begin_effective_date <= ref_date,
+      end_effective_date >= ref_date
+    ) |>
+    distinct(agreement) |>
+    mutate(year = y)
+}) |>
+  list_rbind() |>
+  left_join(agreements, by = "agreement")
+
+agreement_count_clean <- agreement_ts |>
+  mutate(deal = str_remove(agreement, "[*+]$")) |>
+  mutate(deal = if_else(deal == "columbia", "colombia", deal)) |>
+  filter(!deal %in% c("mfn", "col2")) |>
+  distinct(year, deal) |>
+  count(year, name = "n_deals")
+
+new_deals <- tribble(
+  ~year, ~label,
+  1997, "NAFTA, CBI,\nATPDEA, Oman",
+  2001, "CBTPA",
+  2002, "Jordan",
+  2004, "Chile, Singapore",
+  2005, "Australia",
+  2006, "DR-CAFTA, Morocco",
+  2007, "Bahrain",
+  2009, "Peru",
+  2012, "Colombia, Korea",
+  2013, "Japan, Panama",
+  2020, "USMCA"
+)
+
+ggplot(agreement_count_clean, aes(x = year, y = n_deals)) +
+  geom_step(linewidth = 1, color = "#2C6B8E") +
+  geom_point(
+    data = agreement_count_clean |> inner_join(new_deals, by = "year"),
+    size = 2.5, color = "#2C6B8E"
+  ) +
+  geom_text(
+    data = agreement_count_clean |> inner_join(new_deals, by = "year"),
+    aes(label = label),
+    size = 2.8, vjust = -0.8, hjust = 0.5, lineheight = 0.85,
+    color = "gray30"
+  ) +
+  scale_x_continuous(breaks = seq(1998, 2024, 4)) +
+  scale_y_continuous(breaks = seq(0, 20, 4)) +
+  labs(
+    title = "The US Went on a Free Trade Spree",
+    subtitle = "Number of active preferential trade agreements covering agricultural products",
+    x = NULL, y = "Active agreements",
+    caption = "Source: USITC Tariff Database · Counts exclude MFN and Column 2 baselines"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(color = "gray40", size = 11),
+    plot.caption = element_text(color = "gray50", size = 8),
+    panel.grid.minor = element_blank()
+  )
+```
+
+The biggest burst came during 2004–2013, when the US added eight new bilateral or regional agreements in nine years. After Japan and Panama in 2013, no new deals appeared until USMCA replaced NAFTA in 2020. This wave of deal-making had a direct effect on market access.
+
+## The march toward duty-free
+
+Each new trade agreement brought with it a wave of tariff eliminations. As the staircase of deals climbed, so did the share of product–agreement combinations where the tariff rate dropped to zero.
+
+```{r}
+#| label: duty-free-trend
+duty_free_ts <- map(1997:2024, \(y) {
+  ref_date <- as.Date(paste0(y, "-07-01"))
+  tariffs |>
+    filter(
+      begin_effective_date <= ref_date,
+      end_effective_date >= ref_date
+    ) |>
+    mutate(
+      is_free = coalesce(ad_val_rate, 0) == 0 & coalesce(specific_rate, 0) == 0
+    ) |>
+    summarise(
+      year = y,
+      n_total = n(),
+      n_free = sum(is_free),
+      pct_free = n_free / n_total
+    )
+}) |>
+  list_rbind()
+
+ggplot(duty_free_ts, aes(x = year, y = pct_free)) +
+  geom_line(linewidth = 1, color = "#27AE60") +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  scale_x_continuous(breaks = seq(1998, 2024, 4)) +
+  labs(
+    title = "The March Toward Duty-Free",
+    subtitle = "Share of all product–agreement combinations with zero tariff (annual snapshots)",
+    x = NULL, y = "Duty-free combinations",
+    caption = "Source: USITC Tariff Database · All agreements included · Rate active on July 1 of each year"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(color = "gray40", size = 11),
+    plot.caption = element_text(color = "gray50", size = 8),
+    panel.grid.minor = element_blank()
+  )
+```
+
+The duty-free share climbed from about 53% in 1997 to roughly 78% by 2010, then plateaued — mirroring the trade deal signing spree almost exactly. The remaining ~22% of product–agreement combinations that still face tariffs are the "holdouts": products so politically sensitive that even the most comprehensive trade deals leave them protected.
+
+# Free trade has limits
+
+Not all trade agreements are created equal — and having no trade deal at all puts you at a steep disadvantage. This chart shows the share of US agricultural products that *still* face tariffs under each agreement as of 2024.
+
+```{r}
+#| label: free-trade-limits
+active_2024 <- tariffs_enriched |>
+  filter(
+    begin_effective_date <= as.Date("2024-06-01"),
+    end_effective_date >= as.Date("2024-06-01")
+  )
+
+free_by_agreement <- active_2024 |>
+  mutate(is_free = coalesce(ad_val_rate, 0) == 0 & coalesce(specific_rate, 0) == 0) |>
+  group_by(agreement) |>
+  summarise(
+    n_products = n_distinct(hts8),
+    n_free = n_distinct(hts8[is_free]),
+    pct_free = n_free / n_products,
+    .groups = "drop"
+  ) |>
+  left_join(agreements, by = "agreement") |>
+  filter(
+    n_products > 200,
+    !agreement %in% c("columbia", "cbi*", "atpa", "atpa*", "dr_cafta_plus", "usmca+")
+  )
+
+viz3_data <- free_by_agreement |>
+  mutate(
+    pct_taxed = 1 - pct_free,
+    label = case_when(
+      agreement == "mfn" ~ "No trade deal (MFN)",
+      agreement == "col2" ~ "Column 2\n(non-market economies)",
+      agreement == "usmca" ~ "USMCA (Canada/Mexico)",
+      agreement == "mexico" ~ "NAFTA (Mexico)",
+      agreement == "dr_cafta" ~ "DR-CAFTA",
+      agreement == "cbi" ~ "Caribbean Basin Initiative",
+      TRUE ~ coalesce(
+        str_extract(agreement_full, "^[A-Za-z]+(?=-)"),
+        str_extract(agreement_full, "^[A-Za-z ]+(?= \\()"),
+        agreement_full
+      ) |> str_trim()
+    ),
+    label = fct_reorder(label, pct_taxed),
+    is_mfn = agreement %in% c("mfn", "col2")
+  )
+
+ggplot(viz3_data, aes(x = pct_taxed, y = label, fill = is_mfn)) +
+  geom_col(width = 0.7) +
+  geom_text(
+    aes(label = scales::percent(pct_taxed, accuracy = 0.1)),
+    hjust = -0.1, size = 3.2, fontface = "bold"
+  ) +
+  scale_x_continuous(
+    labels = scales::percent,
+    limits = c(0, 1),
+    breaks = seq(0, 1, 0.25)
+  ) +
+  scale_fill_manual(values = c("TRUE" = "#C0392B", "FALSE" = "#27AE60"), guide = "none") +
+  labs(
+    title = "Free Trade Has Limits",
+    subtitle = "Share of US agricultural products that still face tariffs, by trade agreement (2024)",
+    x = "Products still subject to tariffs",
+    y = NULL,
+    caption = "Source: USITC Tariff Database · Active rates as of mid-2024"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(color = "gray40", size = 11),
+    plot.caption = element_text(color = "gray50", size = 8),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+```
+
+The cliff is dramatic. Without a trade deal (MFN), 68% of agricultural products face tariffs. Under Column 2 rates — reserved for non-market economies — it's 88%. But sign a trade deal, and the picture transforms: even the least generous agreement (Panama) drops the figure to 16%, and the best (Caribbean Basin Initiative) reaches 0%.
+
+::: {.callout-note}
+## What about the holdouts?
+
+Even the most generous trade deals leave ~1% of products taxed. These are the most politically protected items in the agricultural tariff schedule — dairy quotas, sugar, peanuts, and tobacco products — that no negotiator has been able to fully eliminate.
+:::
+
+# Some tariffs are just import bans in disguise
+
+Not all tariff rates are created equal. While most agricultural products face rates in the single digits, a handful carry rates so extreme — one million percent — that they function as de facto import bans.
+
+```{r}
+#| label: import-bans
+viz2_data <- tribble(
+  ~product, ~rate_pct, ~type, ~sort,
+  "Chocolate milk", 17, "normal", 1,
+  "Fruit juice + vitamins", 1000000, "banned", 2,
+  "Refined sugar (over quota)", 35, "normal", 3,
+  "Sugar for polyhydric alcohols", 1000000, "banned", 4,
+  "Protein concentrates", 6.4, "normal", 5,
+  "Fortified veggie juice concentrate", 1000000, "banned", 6,
+  "Peanut butter", 132, "high", 7,
+  "Raw peanuts (in shell)", 164, "high", 8,
+  "Tobacco", 350, "high", 9,
+) |>
+  mutate(
+    type = factor(type, levels = c("banned", "high", "normal")),
+    sort_key = as.numeric(type) * 1e8 + rate_pct,
+    product = fct_reorder(product, sort_key, .desc = TRUE),
+    label = case_when(
+      rate_pct >= 100000 ~ "1,000,000%",
+      rate_pct >= 100 ~ paste0(round(rate_pct), "%"),
+      TRUE ~ paste0(rate_pct, "%")
+    )
+  )
+
+ggplot(viz2_data, aes(x = rate_pct, y = product, fill = type)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = label), hjust = -0.08, size = 3.3, fontface = "bold") +
+  scale_x_log10(
+    labels = scales::label_comma(suffix = "%"),
+    breaks = c(1, 10, 100, 10000, 1000000),
+    expand = expansion(mult = c(0, 0.22))
+  ) +
+  scale_fill_manual(
+    values = c("normal" = "#5B8DB8", "high" = "#E8A838", "banned" = "#C0392B"),
+    labels = c("normal" = "Typical tariff", "high" = "Very high", "banned" = "Effectively banned"),
+    name = NULL,
+    drop = FALSE
+  ) +
+  labs(
+    title = "Some Tariffs Are Just Import Bans in Disguise",
+    subtitle = "MFN tariff rates on selected US agricultural imports (log scale)",
+    x = "Tariff rate (%, log scale)",
+    y = NULL,
+    caption = "Source: USITC Tariff Database · Rates as of most recent effective date"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(color = "gray40", size = 11),
+    plot.caption = element_text(color = "gray50", size = 8),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "top"
+  )
+```
+
+The 1,000,000% rates appear on products that trigger specific regulatory or quota provisions — sugar destined for polyhydric alcohol production, or fruit juices fortified with vitamins or minerals. These rates are not meant to generate revenue; they're meant to ensure that not a single kilogram gets through. Meanwhile, chocolate milk — from the same chapter of the tariff schedule — faces a comparatively modest 17%.
+
+::: {.callout-tip}
+## Why a log scale?
+
+A linear scale would render the typical 5–17% tariff bars invisible next to the million-percent bars. The logarithmic x-axis lets us compare rates that span five orders of magnitude on a single chart. Each gridline represents a 10× increase.
+:::
+
+# The US government's official cheese ranking
+
+Perhaps the most entertaining discovery in the data: the US tariff code implicitly ranks cheeses by perceived fanciness. When cheese imports exceed their quota, a per-kilogram tariff kicks in — and the rate depends on the type of cheese.
+
+```{r}
+#| label: cheese-ranking
+latest_mfn <- tariffs_enriched |>
+  filter(agreement == "mfn") |>
+  arrange(hts8, desc(begin_effective_date)) |>
+  distinct(hts8, .keep_all = TRUE)
+
+cheese_viz_data <- tibble(
+  cheese = c(
+    "Blue-veined", "Italian-type\n(Reggiano, Parmesan, etc.)",
+    "Swiss with holes", "Edam / Gouda",
+    "Chongos", "Swiss without holes",
+    "Gruyere-process", "Cheddar", "American / Colby"
+  ),
+  rate = c(2.27, 2.15, 1.88, 1.80, 1.51, 1.39, 1.39, 1.23, 1.06)
+) |>
+  mutate(cheese = fct_reorder(cheese, rate))
+
+ggplot(cheese_viz_data, aes(x = rate, y = cheese, fill = rate)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = paste0("$", format(rate, nsmall = 2))),
+            hjust = -0.2, size = 3.5, fontface = "bold") +
+  # "Holes cost extra" annotation
+  annotate("label", x = 2.75, y = 5.5,
+           label = "Holes cost extra!\nSwiss with eye formation:\n$1.88 vs $1.39 without",
+           size = 3, hjust = 0.5, fontface = "italic", color = "#8B6914",
+           label.padding = unit(0.5, "lines"), lineheight = 0.9, fill = "#fbf6e5") +
+  annotate("curve", x = 2.35, y = 6.2, xend = 2.20, yend = 7,
+           curvature = 0.2, arrow = arrow(length = unit(0.15, "cm")),
+           color = "#B8860B") +
+  annotate("curve", x = 2.35, y = 4.8, xend = 1.71, yend = 4,
+           curvature = -0.2, arrow = arrow(length = unit(0.15, "cm")),
+           color = "#B8860B") +
+  # "American cheese" annotation
+  annotate("label", x = 2.25, y = 1.8,
+           label = "American cheese:\nleast protected\nin its own country",
+           size = 3, hjust = 0.5, fontface = "italic", color = "#8B6914",
+           label.padding = unit(0.5, "lines"), lineheight = 0.9, fill = "#fbf6e5") +
+  annotate("curve", x = 1.85, y = 1.5, xend = 1.38, yend = 1,
+           curvature = -0.2, arrow = arrow(length = unit(0.15, "cm")),
+           color = "#B8860B") +
+  scale_fill_gradient(low = "#FFD700", high = "#B8860B", guide = "none") +
+  scale_x_continuous(
+    limits = c(0, 3.15),
+    breaks = seq(0, 2.5, 0.5),
+    labels = scales::dollar_format()
+  ) +
+  labs(
+    title = "The US Government's Official Cheese Ranking",
+    subtitle = "Over-quota MFN tariff rates per kilogram — unchanged since 2000",
+    x = "Tariff ($/kg)",
+    y = NULL,
+    caption = "Source: USITC Tariff Database (HTS Chapter 04) · MFN over-quota specific rates"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(color = "gray40", size = 11),
+    plot.caption = element_text(color = "gray50", size = 8),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+```
+
+Blue-veined cheese faces the steepest tariff at \$2.27/kg, followed by Italian-type cheeses (Reggiano, Parmesan, Provolone) at \$2.15/kg. At the bottom of the hierarchy: American cheese and Colby at \$1.06/kg — the least protected cheeses in their own country's tariff code.
+
+The tariff schedule even distinguishes Swiss cheese **with eye formation** (the holes) from Swiss cheese **without eye formation**, charging an extra \$0.49/kg for the privilege of having holes in your cheese.
+
+::: {.callout-important}
+## Frozen in time
+
+These cheese tariff rates have been essentially unchanged since 2000, when the final Uruguay Round tariff reductions took effect. The hierarchy has never shifted — not once in 25 years. These are among the most static rates in the entire US tariff schedule.
+:::
