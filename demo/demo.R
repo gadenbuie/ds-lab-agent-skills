@@ -8,8 +8,9 @@ chat <- chat_claude(model = "claude-sonnet-4-6")
 live_console(chat)
 
 
-# ---- System prompt ----
+# ---- Manual skills ----
 chat2 <- chat_claude(model = "claude-sonnet-4-6")
+chat2$register_tool(btw::btw_tool_files_read)
 
 live_console(chat2)
 
@@ -19,3 +20,12 @@ chat3 <- chat_claude(model = "claude-sonnet-4-6")
 chat3$register_tool(btw::btw_tool_skill)
 
 live_console(chat3)
+
+
+# ----- btw! ----
+chat4 <- btw::btw_client(
+  client = "claude/claude-sonnet-4-6",
+  tools = "skills"
+)
+
+live_console(chat4)
